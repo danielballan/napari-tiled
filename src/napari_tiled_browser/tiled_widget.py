@@ -56,7 +56,7 @@ class TiledBrowser(QWidget):
         # Navigation elements
         self.rows_per_page_label = QLabel("Rows per page: ")
         self.rows_per_page_selector = QComboBox()
-        self.rows_per_page_selector.addItems(["5", "10"])
+        self.rows_per_page_selector.addItems(["5", "10", "25"])
         self.rows_per_page_selector.setCurrentIndex(0)
 
         self.current_location_label = QLabel()
@@ -75,17 +75,20 @@ class TiledBrowser(QWidget):
         navigation_layout.addWidget(self.next_page)
         self.navigation_widget.setLayout(navigation_layout)
 
-        # Current path
+        # Current path layout
+        self.current_path_layout = QHBoxLayout()
         self.current_path_label = QLabel()
 
         # Catalog table elements
         self.catalog_table = QTableWidget(0, 1)
+        self.catalog_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.catalog_table.horizontalHeader().hide()  # remove header
         self.catalog_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)  # disable multi-select
         # disabled due to bad colour palette  # self.catalog_table.setAlternatingRowColors(True)
         self._create_table_rows()
         self.catalog_table.itemDoubleClicked.connect(self._on_item_double_click)
         self.catalog_table_widget = QWidget()
+        self.catalog_breadcrumbs = None
 
         # Catalog table layout
         catalog_table_layout = QVBoxLayout()
@@ -171,6 +174,14 @@ class TiledBrowser(QWidget):
         self._populate_table()
         self._set_current_location_label()
 
+    def exit_node(self):
+        self.node_path = self.node_path[:-1]
+        self.current_path_label.setText('/'.join(self.node_path))
+        self._current_page = 0
+        self._create_table_rows()
+        self._populate_table()
+        self._set_current_location_label()
+
     def _on_rows_per_page_changed(self, value):
         self._rows_per_page = int(value)
         self._create_table_rows()
@@ -181,12 +192,22 @@ class TiledBrowser(QWidget):
         # Remove all rows first
         while self.catalog_table.rowCount() > 0:
             self.catalog_table.removeRow(0)
+
+        if self.node_path:
+            # add breadcrumbs
+            self.catalog_breadcrumbs = QTableWidgetItem('..')
+            self.catalog_table.insertRow(0)
+            self.catalog_table.setItem(0, 0, self.catalog_breadcrumbs)
+
         # Then add new rows
         for row in range(self._rows_per_page):
             last_row_position = self.catalog_table.rowCount()
             self.catalog_table.insertRow(last_row_position)
 
     def _on_item_double_click(self, item):
+        if item is self.catalog_breadcrumbs:
+            self.exit_node()
+            return
         name = item.text()
         node = self.get_current_node()[name]
         family = node.item['attributes']['structure_family']
@@ -200,11 +221,19 @@ class TiledBrowser(QWidget):
         # Fetch a page of keys.
         keys = self.get_current_node().keys()[node_offset:node_offset + self._rows_per_page]
         # Loop over rows, filling in keys until we run out of keys.
-        for row_index, key in zip(range(self.catalog_table.rowCount()), keys):
-            item = QTableWidgetItem(key)
-            item.setFlags(item.flags() ^ Qt.ItemIsEditable)
-            self.catalog_table.setItem(row_index, 0, item)
-        self.catalog_table.setVerticalHeaderLabels([str(x + 1) for x in range(node_offset, node_offset + self.catalog_table.rowCount())])
+        start = 1 if self.node_path else 0
+        for row_index, key in zip(range(start, self.catalog_table.rowCount()), keys):
+            self.catalog_table.setItem(row_index, 0, QTableWidgetItem(key))
+
+        # remove extra rows
+        for row in range(self._rows_per_page - len(keys)):
+            self.catalog_table.removeRow(self.catalog_table.rowCount() - 1)
+        
+        headers = [str(x + 1) for x in range(node_offset, node_offset + self.catalog_table.rowCount())]
+        if self.node_path:
+            headers = [''] + headers
+
+        self.catalog_table.setVerticalHeaderLabels(headers)
 
     def _on_prev_page_clicked(self):
         if self._current_page != 0:
