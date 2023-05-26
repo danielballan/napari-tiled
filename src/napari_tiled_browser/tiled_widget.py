@@ -206,7 +206,8 @@ class TiledBrowser(QWidget):
             return
         family = node.item['attributes']['structure_family']
         if family == StructureFamily.array:
-            self.viewer.add_image(node, name=node_id)
+            layer = self.viewer.add_image(node, name=node_id)
+            layer.reset_contrast_limits()
         elif family == StructureFamily.node:
             self.enter_node(node_id)
 
@@ -254,7 +255,7 @@ class TiledBrowser(QWidget):
         info = ''
         if family == StructureFamily.array:
             shape = attrs['structure']['macro']['shape']
-            info += '<b>shape:</b> ' + str(tuple(shape)) + '\n'
+            info += '<b>shape:</b> ' + str(tuple(shape)) + '<br>'
         info += '<b>metadata:</b> ' + metadata
         self.info_box.setText(info)
 
