@@ -95,8 +95,8 @@ class TiledBrowser(QWidget):
         self.navigation_widget.setLayout(navigation_layout)
 
         # Current path layout
-        self.current_path_layout = QHBoxLayout()
         self.current_path_label = QLabel()
+        self._rebuild_current_path_label()
 
         # Catalog table elements
         self.catalog_table = QTableWidget(0, 1)
@@ -174,8 +174,7 @@ class TiledBrowser(QWidget):
         self._current_page = 0
         if root is not None:
             self.catalog_table_widget.setVisible(True)
-            self._set_current_location_label()
-            self._rebuild_table()
+            self._rebuild()
 
     def get_current_node(self):
         return self.get_node(self.node_path)
@@ -188,17 +187,13 @@ class TiledBrowser(QWidget):
     
     def enter_node(self, node_id):
         self.node_path += (node_id,)
-        self.current_path_label.setText('/'.join(self.node_path))
         self._current_page = 0
-        self._rebuild_table()
-        self._set_current_location_label()
+        self._rebuild()
 
     def exit_node(self):
         self.node_path = self.node_path[:-1]
-        self.current_path_label.setText('/'.join(self.node_path))
         self._current_page = 0
-        self._rebuild_table()
-        self._set_current_location_label()
+        self._rebuild()
 
     def open_node(self, node_id):
         node = self.get_current_node()[node_id]
@@ -258,6 +253,10 @@ class TiledBrowser(QWidget):
         self.info_box.setText('')
         self.load_button.setEnabled(False)
 
+    def _rebuild_current_path_label(self):
+        path = ('root',) + self.node_path + ('',)
+        self.current_path_label.setText(' / '.join(path))
+
     def _rebuild_table(self):
         prev_block = self.catalog_table.blockSignals(True)
         # Remove all rows first
@@ -294,19 +293,22 @@ class TiledBrowser(QWidget):
         self._clear_metadata()
         self.catalog_table.blockSignals(prev_block)
 
+    def _rebuild(self):
+        self._rebuild_table()
+        self._rebuild_current_path_label()
+        self._set_current_location_label()
+
     def _on_prev_page_clicked(self):
         if self._current_page != 0:
             self._current_page -= 1
-            self._rebuild_table()
-            self._set_current_location_label()
+            self._rebuild()
 
     def _on_next_page_clicked(self):
         if (
             self._current_page * self._rows_per_page
         ) + self._rows_per_page < len(self.get_current_node()):
             self._current_page += 1
-            self._rebuild_table()
-            self._set_current_location_label()
+            self._rebuild()
 
     def _set_current_location_label(self):
         starting_index = self._current_page * self._rows_per_page + 1
