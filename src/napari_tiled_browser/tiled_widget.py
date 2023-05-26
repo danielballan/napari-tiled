@@ -156,7 +156,7 @@ class TiledBrowser(QWidget):
         )
 
     def _on_connect_clicked(self):
-        url = self.url_entry.displayText()
+        url = self.url_entry.displayText().strip()
         # url = "https://tiled-demo.blueskyproject.io/api"
         if not url:
             show_info("Please specify a url.")
@@ -167,7 +167,7 @@ class TiledBrowser(QWidget):
             show_info("Unsupported tiled type detected")
         except Exception:
             show_info("Could not connect. Please check the url.")
-        finally:
+        else:
             self.connection_label.setText(f"Connected to {url}")
             self.set_root(root)
 
@@ -219,7 +219,6 @@ class TiledBrowser(QWidget):
         if item is self.catalog_breadcrumbs:
             return
         self.open_node(item.text())
-
 
     def _on_rows_per_page_changed(self, value):
         self._rows_per_page = int(value)
