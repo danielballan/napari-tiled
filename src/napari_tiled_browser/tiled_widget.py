@@ -251,11 +251,11 @@ class TiledBrowser(QWidget):
         metadata = json.dumps(attrs['metadata'], indent=2, default=json_decode)
         family = attrs['structure_family']
 
-        info = ''
+        info = f'<b>type:</b> {family}<br>'
         if family == StructureFamily.array:
             shape = attrs['structure']['macro']['shape']
-            info += '<b>shape:</b> ' + str(tuple(shape)) + '<br>'
-        info += '<b>metadata:</b> ' + metadata
+            info += f'<b>shape:</b> {tuple(shape)}<br>'
+        info += f'<b>metadata:</b> {metadata}'
         self.info_box.setText(info)
 
         if family in (StructureFamily.array, StructureFamily.node):
