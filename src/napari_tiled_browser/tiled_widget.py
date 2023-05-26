@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
 from tiled.client import from_uri
 from tiled.client.array import DaskArrayClient
 from tiled.client.node import Node
+from tiled.client.utils import UnknownStructureFamily
 from tiled.structures.core import StructureFamily
 
 
@@ -47,6 +48,8 @@ def log_tiled_type(*args, **kwargs):
 
 
 class TiledBrowser(QWidget):
+    NODE_ID_MAXLEN = 8
+
     # your QWidget.__init__ can optionally request the napari viewer instance
     # in one of two ways:
     # 1. use a parameter called `napari_viewer`, as done here
@@ -196,7 +199,11 @@ class TiledBrowser(QWidget):
         self._rebuild()
 
     def open_node(self, node_id):
-        node = self.get_current_node()[node_id]
+        try:
+            node = self.get_current_node()[node_id]
+        except UnknownStructureFamily as e:
+            show_info(f"Cannot open type: '{e.args[0]}'")
+            return
         family = node.item['attributes']['structure_family']
         if family == StructureFamily.array:
             self.viewer.add_image(node, name=node_id)
@@ -233,7 +240,12 @@ class TiledBrowser(QWidget):
 
         name = item.text()
         node_path = self.node_path + (name,)
-        node = self.get_node(node_path)
+        try:
+            node = self.get_node(node_path)
+        except UnknownStructureFamily as e:
+            self.info_box.setText(f"<b>error:</b> unknown structure family '{e.args[0]}'")
+            self.load_button.setEnabled(False)
+            return
         
         attrs = node.item['attributes']
         metadata = json.dumps(attrs['metadata'], indent=2, default=json_decode)
@@ -242,8 +254,8 @@ class TiledBrowser(QWidget):
         info = ''
         if family == StructureFamily.array:
             shape = attrs['structure']['macro']['shape']
-            info += 'shape: ' + str(tuple(shape)) + '\n'
-        info += 'metadata: ' + metadata
+            info += '<b>shape:</b> ' + str(tuple(shape)) + '\n'
+        info += '<b>metadata:</b> ' + metadata
         self.info_box.setText(info)
 
         if family in (StructureFamily.array, StructureFamily.node):
@@ -254,7 +266,13 @@ class TiledBrowser(QWidget):
         self.load_button.setEnabled(False)
 
     def _rebuild_current_path_label(self):
-        path = ('root',) + self.node_path + ('',)
+        path = ['root']
+        for node_id in self.node_path:
+            if len(node_id) > self.NODE_ID_MAXLEN:
+                node_id = node_id[:self.NODE_ID_MAXLEN - 3] + '...'
+            path.append(node_id)
+        path.append('')
+
         self.current_path_label.setText(' / '.join(path))
 
     def _rebuild_table(self):
