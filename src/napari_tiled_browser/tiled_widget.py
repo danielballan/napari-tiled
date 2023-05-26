@@ -6,7 +6,9 @@ see: https://napari.org/plugins/guides.html?#widgets
 
 Replace code below according to your needs.
 """
+from datetime import date, datetime
 import functools
+import json
 
 from napari.utils.notifications import show_info
 from qtpy.QtCore import Qt, Signal
@@ -20,11 +22,28 @@ from qtpy.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 from tiled.client import from_uri
+from tiled.client.array import DaskArrayClient
+from tiled.client.node import Node
 from tiled.structures.core import StructureFamily
+
+
+class UnsupportedException(Exception):
+    pass
+
+
+def json_decode(obj):
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    return str(obj)
+
+
+def log_tiled_type(*args, **kwargs):
+    raise UnsupportedException
 
 
 class TiledBrowser(QWidget):
@@ -81,20 +100,35 @@ class TiledBrowser(QWidget):
 
         # Catalog table elements
         self.catalog_table = QTableWidget(0, 1)
-        self.catalog_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.catalog_table.horizontalHeader().setStretchLastSection(True)
+        self.catalog_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)  # disable editing
         self.catalog_table.horizontalHeader().hide()  # remove header
         self.catalog_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)  # disable multi-select
         # disabled due to bad colour palette  # self.catalog_table.setAlternatingRowColors(True)
-        self._create_table_rows()
         self.catalog_table.itemDoubleClicked.connect(self._on_item_double_click)
+        self.catalog_table.itemSelectionChanged.connect(self._on_item_selected)
         self.catalog_table_widget = QWidget()
         self.catalog_breadcrumbs = None
+
+        # Info layout
+        self.info_box = QTextEdit()
+        self.info_box.setReadOnly(True)
+        self.load_button = QPushButton('Open')
+        self.load_button.setEnabled(False)
+        self.load_button.clicked.connect(self._on_load)
+        catalog_info_layout = QHBoxLayout()
+        catalog_info_layout.addWidget(self.catalog_table)
+        load_layout = QVBoxLayout()
+        load_layout.addWidget(self.info_box)
+        load_layout.addWidget(self.load_button)
+        catalog_info_layout.addLayout(load_layout)
 
         # Catalog table layout
         catalog_table_layout = QVBoxLayout()
         catalog_table_layout.addWidget(self.current_path_label)
-        catalog_table_layout.addWidget(self.catalog_table)
+        catalog_table_layout.addLayout(catalog_info_layout)
         catalog_table_layout.addWidget(self.navigation_widget)
+        catalog_table_layout.addStretch(1)
         self.catalog_table_widget.setLayout(catalog_table_layout)
         self.catalog_table_widget.setVisible(False)
 
@@ -118,21 +152,6 @@ class TiledBrowser(QWidget):
             self._on_rows_per_page_changed
         )
 
-    # def _on_connect_clicked(self):
-    #     url = self.url_entry.displayText()
-    #     if not url:
-    #         show_info("Please specify a url.")
-    #         return
-    #     try:
-    #         self.root = from_uri(url)
-    #     except Exception:
-    #         show_info("Could not connect. Please check the url.")
-    #         return
-    #     self.connection_label.setText(f"Connected to {url}")
-    #     self.catalog_table_widget.setVisible(True)
-    #     self._set_current_location_label()
-    #     self._populate_table()
-
     def _on_connect_clicked(self):
         url = self.url_entry.displayText()
         # url = "https://tiled-demo.blueskyproject.io/api"
@@ -140,13 +159,14 @@ class TiledBrowser(QWidget):
             show_info("Please specify a url.")
             return
         try:
-            # self.root = from_uri(url)["bmm"]["raw"]  # .keys()[:13]
-            self.set_root(from_uri(url))
+            root = from_uri(url, {"array": DaskArrayClient, "node": Node})
+        except UnsupportedException:
+            show_info("Unsupported tiled type detected")
         except Exception:
             show_info("Could not connect. Please check the url.")
-            return
-        
-        self.connection_label.setText(f"Connected to {url}")
+        finally:
+            self.connection_label.setText(f"Connected to {url}")
+            self.set_root(root)
 
     def set_root(self, root):
         self.root = root
@@ -155,7 +175,7 @@ class TiledBrowser(QWidget):
         if root is not None:
             self.catalog_table_widget.setVisible(True)
             self._set_current_location_label()
-            self._populate_table()
+            self._rebuild_table()
 
     def get_current_node(self):
         return self.get_node(self.node_path)
@@ -170,25 +190,76 @@ class TiledBrowser(QWidget):
         self.node_path += (node_id,)
         self.current_path_label.setText('/'.join(self.node_path))
         self._current_page = 0
-        self._create_table_rows()
-        self._populate_table()
+        self._rebuild_table()
         self._set_current_location_label()
 
     def exit_node(self):
         self.node_path = self.node_path[:-1]
         self.current_path_label.setText('/'.join(self.node_path))
         self._current_page = 0
-        self._create_table_rows()
-        self._populate_table()
+        self._rebuild_table()
         self._set_current_location_label()
+
+    def open_node(self, node_id):
+        node = self.get_current_node()[node_id]
+        family = node.item['attributes']['structure_family']
+        if family == StructureFamily.array:
+            self.viewer.add_image(node, name=node_id)
+        elif family == StructureFamily.node:
+            self.enter_node(node_id)
+
+    def _on_load(self):
+        selected = self.catalog_table.selectedItems()
+        if not selected:
+            return
+        item = selected[0]
+        if item is self.catalog_breadcrumbs:
+            return
+        self.open_node(item.text())
+
 
     def _on_rows_per_page_changed(self, value):
         self._rows_per_page = int(value)
-        self._create_table_rows()
-        self._populate_table()
+        self._current_page = 0
+        self._rebuild_table()
         self._set_current_location_label()
 
-    def _create_table_rows(self):
+    def _on_item_double_click(self, item):
+        if item is self.catalog_breadcrumbs:
+            self.exit_node()
+            return
+        self.open_node(item.text())
+
+    def _on_item_selected(self):
+        selected = self.catalog_table.selectedItems()
+        if not selected or (item:=selected[0]) is self.catalog_breadcrumbs:
+            self._clear_metadata()
+            return
+
+        name = item.text()
+        node_path = self.node_path + (name,)
+        node = self.get_node(node_path)
+        
+        attrs = node.item['attributes']
+        metadata = json.dumps(attrs['metadata'], indent=2, default=json_decode)
+        family = attrs['structure_family']
+
+        info = ''
+        if family == StructureFamily.array:
+            shape = attrs['structure']['macro']['shape']
+            info += 'shape: ' + str(tuple(shape)) + '\n'
+        info += 'metadata: ' + metadata
+        self.info_box.setText(info)
+
+        if family in (StructureFamily.array, StructureFamily.node):
+            self.load_button.setEnabled(True)
+
+    def _clear_metadata(self):
+        self.info_box.setText('')
+        self.load_button.setEnabled(False)
+
+    def _rebuild_table(self):
+        prev_block = self.catalog_table.blockSignals(True)
         # Remove all rows first
         while self.catalog_table.rowCount() > 0:
             self.catalog_table.removeRow(0)
@@ -203,20 +274,6 @@ class TiledBrowser(QWidget):
         for row in range(self._rows_per_page):
             last_row_position = self.catalog_table.rowCount()
             self.catalog_table.insertRow(last_row_position)
-
-    def _on_item_double_click(self, item):
-        if item is self.catalog_breadcrumbs:
-            self.exit_node()
-            return
-        name = item.text()
-        node = self.get_current_node()[name]
-        family = node.item['attributes']['structure_family']
-        if family == StructureFamily.array:
-            self.viewer.add_image(node, name=name)
-        elif family == StructureFamily.node:
-            self.enter_node(name)
-
-    def _populate_table(self):
         node_offset = self._rows_per_page * self._current_page
         # Fetch a page of keys.
         keys = self.get_current_node().keys()[node_offset:node_offset + self._rows_per_page]
@@ -234,11 +291,13 @@ class TiledBrowser(QWidget):
             headers = [''] + headers
 
         self.catalog_table.setVerticalHeaderLabels(headers)
+        self._clear_metadata()
+        self.catalog_table.blockSignals(prev_block)
 
     def _on_prev_page_clicked(self):
         if self._current_page != 0:
             self._current_page -= 1
-            self._populate_table()
+            self._rebuild_table()
             self._set_current_location_label()
 
     def _on_next_page_clicked(self):
@@ -246,7 +305,7 @@ class TiledBrowser(QWidget):
             self._current_page * self._rows_per_page
         ) + self._rows_per_page < len(self.get_current_node()):
             self._current_page += 1
-            self._populate_table()
+            self._rebuild_table()
             self._set_current_location_label()
 
     def _set_current_location_label(self):
