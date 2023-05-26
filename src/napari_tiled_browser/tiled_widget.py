@@ -6,12 +6,15 @@ see: https://napari.org/plugins/guides.html?#widgets
 
 Replace code below according to your needs.
 """
+import collections
 from datetime import date, datetime
 import functools
 import json
 
 from napari.utils.notifications import show_info
+from napari.resources._icons import ICONS
 from qtpy.QtCore import Qt, Signal
+from qtpy.QtGui import QIcon, QPixmap
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -20,6 +23,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -29,12 +33,7 @@ from qtpy.QtWidgets import (
 from tiled.client import from_uri
 from tiled.client.array import DaskArrayClient
 from tiled.client.node import Node
-from tiled.client.utils import UnknownStructureFamily
 from tiled.structures.core import StructureFamily
-
-
-class UnsupportedException(Exception):
-    pass
 
 
 def json_decode(obj):
@@ -43,12 +42,17 @@ def json_decode(obj):
     return str(obj)
 
 
-def log_tiled_type(*args, **kwargs):
-    raise UnsupportedException
+class DummyClient:
+    "Placeholder for a structure family we cannot (yet) handle"
+    def __init__(self, *args, item, **kwargs):
+        self.item = item
 
+STRUCTURE_CLIENTS = collections.defaultdict(lambda: DummyClient)
+STRUCTURE_CLIENTS.update({"array": DaskArrayClient, "node": Node})
 
 class TiledBrowser(QWidget):
     NODE_ID_MAXLEN = 8
+    SUPPORTED_TYPES = (StructureFamily.array, StructureFamily.node)
 
     # your QWidget.__init__ can optionally request the napari viewer instance
     # in one of two ways:
@@ -162,9 +166,9 @@ class TiledBrowser(QWidget):
             show_info("Please specify a url.")
             return
         try:
-            root = from_uri(url, {"array": DaskArrayClient, "node": Node})
-        except UnsupportedException:
-            show_info("Unsupported tiled type detected")
+            root = from_uri(url, STRUCTURE_CLIENTS)
+            if isinstance(root, DummyClient):
+                show_info("Unsupported tiled type detected")
         except Exception:
             show_info("Could not connect. Please check the url.")
         else:
@@ -199,17 +203,18 @@ class TiledBrowser(QWidget):
         self._rebuild()
 
     def open_node(self, node_id):
-        try:
-            node = self.get_current_node()[node_id]
-        except UnknownStructureFamily as e:
-            show_info(f"Cannot open type: '{e.args[0]}'")
-            return
+        node = self.get_current_node()[node_id]
         family = node.item['attributes']['structure_family']
+        if isinstance(node, DummyClient):
+            show_info(f"Cannot open type: '{family}'")
+            return
         if family == StructureFamily.array:
             layer = self.viewer.add_image(node, name=node_id)
             layer.reset_contrast_limits()
         elif family == StructureFamily.node:
             self.enter_node(node_id)
+        else:
+            show_info(f"Type not supported:'{family}")
 
     def _on_load(self):
         selected = self.catalog_table.selectedItems()
@@ -240,16 +245,11 @@ class TiledBrowser(QWidget):
 
         name = item.text()
         node_path = self.node_path + (name,)
-        try:
-            node = self.get_node(node_path)
-        except UnknownStructureFamily as e:
-            self.info_box.setText(f"<b>error:</b> unknown structure family '{e.args[0]}'")
-            self.load_button.setEnabled(False)
-            return
+        node = self.get_node(node_path)
         
         attrs = node.item['attributes']
-        metadata = json.dumps(attrs['metadata'], indent=2, default=json_decode)
         family = attrs['structure_family']
+        metadata = json.dumps(attrs['metadata'], indent=2, default=json_decode)
 
         info = f'<b>type:</b> {family}<br>'
         if family == StructureFamily.array:
@@ -258,8 +258,10 @@ class TiledBrowser(QWidget):
         info += f'<b>metadata:</b> {metadata}'
         self.info_box.setText(info)
 
-        if family in (StructureFamily.array, StructureFamily.node):
+        if family in self.SUPPORTED_TYPES:
             self.load_button.setEnabled(True)
+        else:
+            self.load_button.setEnabled(False)
 
     def _clear_metadata(self):
         self.info_box.setText('')
@@ -293,14 +295,21 @@ class TiledBrowser(QWidget):
             self.catalog_table.insertRow(last_row_position)
         node_offset = self._rows_per_page * self._current_page
         # Fetch a page of keys.
-        keys = self.get_current_node().keys()[node_offset:node_offset + self._rows_per_page]
+        items = self.get_current_node().items()[node_offset:node_offset + self._rows_per_page]
         # Loop over rows, filling in keys until we run out of keys.
         start = 1 if self.node_path else 0
-        for row_index, key in zip(range(start, self.catalog_table.rowCount()), keys):
-            self.catalog_table.setItem(row_index, 0, QTableWidgetItem(key))
+        for row_index, (key, value) in zip(range(start, self.catalog_table.rowCount()), items):
+            family = value.item['attributes']['structure_family']
+            if family == StructureFamily.node:
+                icon = self.style().standardIcon(QStyle.SP_DirHomeIcon)
+            elif family == StructureFamily.array:
+                icon = QIcon(QPixmap(ICONS['new_image']))
+            else:
+                icon = self.style().standardIcon(QStyle.SP_TitleBarContextHelpButton)
+            self.catalog_table.setItem(row_index, 0, QTableWidgetItem(icon,key))
 
         # remove extra rows
-        for row in range(self._rows_per_page - len(keys)):
+        for row in range(self._rows_per_page - len(items)):
             self.catalog_table.removeRow(self.catalog_table.rowCount() - 1)
         
         headers = [str(x + 1) for x in range(node_offset, node_offset + self.catalog_table.rowCount())]
